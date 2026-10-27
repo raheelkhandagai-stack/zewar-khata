@@ -189,6 +189,7 @@ tr.click:hover td { background: var(--sunk); }
     <nav class="tabs" id="tabs" aria-label="Sections">
       <button data-view="home">Dashboard</button>
       <button data-view="bill">New Bill</button>
+      <button data-view="purchases">Old Gold Purchase</button>
       <button data-view="customers">Customers</button>
       <button data-view="stock">Stock</button>
       <button data-view="bills">Bills &amp; Receipts</button>
@@ -209,12 +210,15 @@ const KARATS = [24, 22, 21, 18];
 const METHODS = ["Cash", "Bank transfer", "JazzCash", "Easypaisa", "Card"];
 const CATEGORIES = ["Ring", "Necklace", "Bangles", "Earrings", "Chain", "Bracelet", "Set", "Pendant", "Nose pin", "Other"];
 
-const S = { customers: [], products: [], sales: [], payments: [], settings: null, loaded: false, mode: "loading" };
+const PKARATS = [24, 22, 21, 20, 18, 14];
+const PSTATUS = ["In hand", "Melted / sent to karigar", "Sold"];
+const S = { customers: [], products: [], sales: [], payments: [], purchases: [], settings: null, loaded: false, mode: "loading" };
 let db = null, downloads = null;
 let view = "home";
 let dirty = false;
 let draft = null;
-const q = { customers: "", stock: "", bills: "" };
+const q = { customers: "", stock: "", bills: "", purchases: "" };
+let pdraft = null;
 
 /* ---------- helpers ---------- */
 const $ = (s, r = document) => r.querySelector(s);
@@ -248,7 +252,8 @@ function totals(d, rate, silver) {
 function customerBalance(cid) {
   const s = S.sales.filter(x => x.customerId === cid).reduce((a, x) => a + n(x.balance), 0);
   const p = S.payments.filter(x => x.customerId === cid).reduce((a, x) => a + n(x.amount), 0);
-  return Math.round(s - p);
+  const g = S.purchases.filter(x => x.customerId === cid).reduce((a, x) => a + n(x.khata), 0);
+  return Math.round(s - p - g);
 }
 function nextNo(list, prefix) {
   let max = 1000;
@@ -263,10 +268,10 @@ function newDraft() { return { customerId: "", walkName: "", walkPhone: "", date
 const byCreated = (a, b) => (b.createdAt || "").localeCompare(a.createdAt || "");
 
 /* ---------- data layer ---------- */
-const COLS = ["customers", "products", "sales", "payments"];
+const COLS = ["customers", "products", "sales", "payments", "purchases"];
 const LS_KEY = "zewar-khata-v1";
 function persist() {
-  try { localStorage.setItem(LS_KEY, JSON.stringify({ customers: S.customers, products: S.products, sales: S.sales, payments: S.payments, settings: S.settings })); }
+  try { localStorage.setItem(LS_KEY, JSON.stringify({ customers: S.customers, products: S.products, sales: S.sales, payments: S.payments, purchases: S.purchases, settings: S.settings })); }
   catch (e) { toast("Couldn't save on this device. Storage may be full or blocked."); }
 }
 function loadLocal() {
@@ -410,7 +415,7 @@ function render() {
   if (S.mode === "memory") html += `<div class="banner">Records can't be saved in this browser (storage is blocked, e.g. private mode). Open the site in a normal browser window.</div>`;
   if (S.mode === "loading" && !S.loaded) html += `<div class="banner">Loading your shop records…</div>`;
   if (S.loaded && !n(settings().rateGram)) html += `<div class="banner">Set today's gold rate per gram first so bills calculate correctly. <button class="btn sm gold" data-action="edit-rate">Set gold rate</button></div>`;
-  html += ({ home: vHome, bill: vBill, customers: vCustomers, stock: vStock, bills: vBills, settings: vSettings }[view] || vHome)();
+  html += ({ home: vHome, bill: vBill, customers: vCustomers, stock: vStock, bills: vBills, purchases: vPurchases, settings: vSettings }[view] || vHome)();
   main.innerHTML = html;
   if (view === "bill") updateBillTotals();
 }
@@ -427,7 +432,7 @@ function vHome() {
   const goldG = inStock.filter(p => p.metal === "gold").reduce((a, p) => a + n(p.weight) * n(p.qty), 0);
   return `
   <div class="head"><div><h2>Aaj ka hisaab</h2><p>${fmtDate(t)}</p></div>
-    <div class="row"><button class="btn primary" data-go="bill">+ New bill</button><button class="btn" data-action="new-payment">Receive payment</button></div></div>
+    <div class="row"><button class="btn primary" data-go="bill">+ New bill</button><button class="btn" data-action="new-payment">Receive payment</button><button class="btn gold" data-action="new-purchase">Buy old gold</button></div></div>
   <div class="stats">
     <div class="panel stat"><div class="label">Today's sales</div><div class="value">${money(todays.reduce((a, s) => a + n(s.total), 0))}</div><div class="sub">${todays.length} bill${todays.length === 1 ? "" : "s"} · ${money(todayRcv)} received</div></div>
     <div class="panel stat"><div class="label">This month</div><div class="value">${money(month.reduce((a, s) => a + n(s.total), 0))}</div><div class="sub">${month.length} bills</div></div>
@@ -655,7 +660,7 @@ function openModal(html, wide) {
   $("#modalRoot").innerHTML = `<div class="scrim" data-scrim><div class="modal ${wide ? "wide" : ""}" role="dialog" aria-modal="true">${html}</div></div>`;
   const f = $("#modalRoot input, #modalRoot select, #modalRoot button.btn"); if (f) setTimeout(() => f.focus(), 30);
 }
-function closeModal() { $("#modalRoot").innerHTML = ""; if (dirty && (view !== "bill" || !draft.lines.length)) { dirty = false; render(); } }
+function closeModal() { $("#modalRoot").innerHTML = ""; pdraft = null; if (dirty && (view !== "bill" || !draft.lines.length)) { dirty = false; render(); } }
 function confirmBox(title, msg, okLabel, onOk) {
   openModal(`<div class="modal-head"><h3>${esc(title)}</h3></div><div class="modal-body"><p style="margin:0">${msg}</p></div>
   <div class="modal-foot"><button class="btn" data-action="close">Cancel</button><button class="btn danger" id="cfOk">${esc(okLabel)}</button></div>`);
@@ -690,10 +695,12 @@ function openCustomer(id) {
   const c = S.customers.find(x => x.id === id); if (!c) return;
   const sales = S.sales.filter(s => s.customerId === id);
   const pays = S.payments.filter(p => p.customerId === id);
-  const entries = [...sales.map(s => ({ t: "s", d: s.date, at: s.createdAt, x: s })), ...pays.map(p => ({ t: "p", d: p.date, at: p.createdAt, x: p }))].sort((a, b) => (a.d + a.at).localeCompare(b.d + b.at));
+  const buys = S.purchases.filter(p => p.customerId === id && n(p.khata));
+  const entries = [...sales.map(s => ({ t: "s", d: s.date, at: s.createdAt, x: s })), ...pays.map(p => ({ t: "p", d: p.date, at: p.createdAt, x: p })), ...buys.map(p => ({ t: "g", d: p.date, at: p.createdAt, x: p }))].sort((a, b) => (a.d + a.at).localeCompare(b.d + b.at));
   let run = 0;
   const rows = entries.map(e => {
     if (e.t === "s") { run += n(e.x.balance); return `<tr class="click" data-action="open-sale" data-id="${e.x.id}"><td>${fmtDate(e.d)}</td><td>Bill ${esc(e.x.no)}<div class="hint">Total ${money(e.x.total)} · paid ${money(e.x.paid)}</div></td><td class="r">${money(e.x.balance)}</td><td class="r"></td><td class="r">${money(run)}</td></tr>`; }
+    if (e.t === "g") { run -= n(e.x.khata); return `<tr class="click" data-action="open-purchase" data-id="${e.x.id}"><td>${fmtDate(e.d)}</td><td>Old gold bought ${esc(e.x.no)}<div class="hint">${grams(e.x.weight)} · total ${money(e.x.total)}${n(e.x.paid) ? " · cash " + money(e.x.paid) : ""}</div></td><td class="r"></td><td class="r">${money(e.x.khata)}</td><td class="r">${money(run)}</td></tr>`; }
     run -= n(e.x.amount); return `<tr class="click" data-action="open-payment" data-id="${e.x.id}"><td>${fmtDate(e.d)}</td><td>Receipt ${esc(e.x.no)}<div class="hint">${esc(e.x.method)}</div></td><td class="r"></td><td class="r">${money(e.x.amount)}</td><td class="r">${money(run)}</td></tr>`;
   }).reverse().join("");
   const bal = customerBalance(id);
@@ -857,8 +864,8 @@ async function copyText(txt) {
   }
 }
 function standaloneDoc(title, inner) {
-  const css = `body{font-family:Georgia,serif;color:#1b2420;max-width:760px;margin:24px auto;padding:0 16px}.paper{border:1px solid #ccd;padding:24px;border-top:5px solid #9a7522}.paper-head,.to,.foot{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}.paper-head{border-bottom:1px dashed #bbb;padding-bottom:12px}.shop{font-size:24px}.doc-kind{letter-spacing:.18em;text-transform:uppercase;color:#9a7522}.meta{text-align:right}.to{padding:12px 0}.hint,.tola{color:#5e6b65;font-size:12px}table{width:100%;border-collapse:collapse;font-family:Arial,sans-serif;font-size:13px}th{text-align:left;font-size:11px;text-transform:uppercase;border-bottom:1px solid #999;padding:8px}td{padding:8px;border-bottom:1px solid #e3e3e3}.r{text-align:right}.totals{margin-left:auto;width:300px;font-family:Arial,sans-serif}.sumrow{display:flex;justify-content:space-between;padding:4px 0}.sumrow.total{border-top:1px solid #999;font-weight:bold;font-size:16px;padding-top:8px}.bal{color:#a3372d;font-weight:bold}.foot{border-top:1px dashed #bbb;margin-top:16px;padding-top:10px;font-size:12px;color:#5e6b65}.pbtn{margin:16px 0;padding:8px 16px;font-size:14px}@media print{.pbtn{display:none}}`;
-  return `<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title><style>${css}</style></head><body><button class="pbtn" onclick="window.print()">Print</button>${inner}</body></html>`;
+  const css = `body{font-family:Georgia,serif;color:#1b2420;max-width:760px;margin:24px auto;padding:0 16px}.paper{border:1px solid #ccd;padding:24px;border-top:5px solid #9a7522}.paper-head,.to,.foot{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}.paper-head{border-bottom:1px dashed #bbb;padding-bottom:12px}.shop{font-size:24px}.doc-kind{letter-spacing:.18em;text-transform:uppercase;color:#9a7522}.meta{text-align:right}.to{padding:12px 0}.hint,.tola{color:#5e6b65;font-size:12px}table{width:100%;border-collapse:collapse;font-family:Arial,sans-serif;font-size:13px}th{text-align:left;font-size:11px;text-transform:uppercase;border-bottom:1px solid #999;padding:8px}td{padding:8px;border-bottom:1px solid #e3e3e3}.r{text-align:right}.totals{margin-left:auto;width:300px;font-family:Arial,sans-serif}.sumrow{display:flex;justify-content:space-between;padding:4px 0}.sumrow.total{border-top:1px solid #999;font-weight:bold;font-size:16px;padding-top:8px}.bal{color:#a3372d;font-weight:bold}.foot{border-top:1px dashed #bbb;margin-top:16px;padding-top:10px;font-size:12px;color:#5e6b65}.pbtn{margin:16px 0;padding:8px 16px;font-size:14px}.ur{direction:rtl;font-family:'Noto Nastaliq Urdu',serif;line-height:2}.decl{border:1px dashed #bbb;padding:10px;margin-top:12px;font-size:12px}@media print{.pbtn{display:none}}`;
+  return `<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Nastaliq+Urdu:wght@500&display=swap"><style>${css}</style></head><body><button class="pbtn" onclick="window.print()">Print</button>${inner}</body></html>`;
 }
 /* ---------- bill as image ---------- */
 let shotBlob = null, shotName = "";
@@ -876,8 +883,7 @@ function captureBlob(inner) {
 function copyImage(kind, rec) {
   if (!rec) return;
   if (!window.html2canvas) { toast("The image tool didn't load. Reload the page and try again."); return; }
-  const inner = kind === "sale" ? invoiceHTML(rec) : receiptHTML(rec);
-  const p = captureBlob(inner);
+  const p = captureBlob(docInner(kind, rec));
   shotName = rec.no + ".png";
   toast("Making image…");
   let started = false;
@@ -895,7 +901,7 @@ function showImage(p, kind, rec) {
   p.then(b => {
     shotBlob = b;
     const url = URL.createObjectURL(b);
-    openModal(`<div class="modal-head"><h3>${kind === "sale" ? "Bill" : "Receipt"} ${esc(rec.no)} image</h3><button class="btn ghost sm" data-action="close">Close</button></div>
+    openModal(`<div class="modal-head"><h3>${kind === "sale" ? "Bill" : kind === "purchase" ? "Purchase receipt" : "Receipt"} ${esc(rec.no)} image</h3><button class="btn ghost sm" data-action="close">Close</button></div>
     <div class="modal-body"><img class="shot" src="${url}" alt="${esc(rec.no)} as an image"><p class="hint" style="margin:0">Your browser didn't allow copying automatically. On a phone, press and hold the image and choose Copy or Save. On a computer, right-click it and choose Copy image.</p></div>
     <div class="modal-foot"><button class="btn" data-action="open-${kind}" data-id="${rec.id}" style="margin-right:auto">Back</button>${downloads ? `<button class="btn primary" data-action="save-shot">Save image</button>` : ""}</div>`, true);
   }).catch(() => toast("Couldn't make the image. Try again."));
@@ -907,9 +913,192 @@ async function saveShot() {
 }
 async function dl(kind, rec) {
   if (!downloads) return;
-  const inner = kind === "sale" ? invoiceHTML(rec) : receiptHTML(rec);
+  const inner = docInner(kind, rec);
   try { await downloads.save({ filename: `${rec.no}.html`, data: standaloneDoc(rec.no, inner) }); toast("Saved. Open the file and press Print."); }
   catch (e) { if (e && e.code === "declined") return; toast("Couldn't download the file. Use Copy for WhatsApp instead."); }
+}
+
+/* ---------- old gold purchase (purana sona khareed) ---------- */
+function docInner(kind, rec) { return kind === "sale" ? invoiceHTML(rec) : kind === "purchase" ? purchaseHTML(rec) : receiptHTML(rec); }
+function newPDraft(cid) {
+  return { customerId: cid || "", name: "", phone: "", cnic: "", address: "", saveCustomer: false, date: todayISO(), rate: n(settings().rateGram) || "",
+    items: [{ desc: "", karat: 22, weight: "", cut: 0 }], paid: "", method: "Cash", note: "" };
+}
+function pPrefill() {
+  const c = S.customers.find(x => x.id === pdraft.customerId);
+  if (c) { pdraft.name = c.name; pdraft.phone = c.phone || ""; pdraft.cnic = c.cnic || ""; pdraft.address = c.address || ""; }
+}
+function pItem(it, rate) {
+  const pure = n(it.weight) * n(it.karat) / 24 * (1 - n(it.cut) / 100);
+  return { pure, value: pure * n(rate) };
+}
+function pTotals(d) {
+  const calc = d.items.map(it => pItem(it, d.rate));
+  const weight = d.items.reduce((a, it) => a + n(it.weight), 0);
+  const pure = calc.reduce((a, x) => a + x.pure, 0);
+  const total = Math.round(calc.reduce((a, x) => a + x.value, 0));
+  const paid = Math.round(n(d.paid));
+  return { weight, pure, total, paid, khata: d.customerId ? Math.max(0, total - paid) : 0, due: total - paid };
+}
+function purchaseForm(cid) {
+  pdraft = newPDraft(cid); if (cid) pPrefill();
+  openModal("", true); paintPForm();
+  setTimeout(() => { const f = $("#pp_cust"); f && f.focus(); }, 30);
+}
+function paintPForm() {
+  const d = pdraft, m = $("#modalRoot .modal"); if (!m || !d) return;
+  const c = S.customers.find(x => x.id === d.customerId);
+  const custOpts = S.customers.map(x => `<option value="${x.id}" ${x.id === d.customerId ? "selected" : ""}>${esc(x.name)}${x.phone ? " · " + esc(x.phone) : ""}</option>`).join("");
+  m.innerHTML = `<div class="modal-head"><h3>Buy old gold <span class="ur">پرانا سونا خرید</span></h3><button type="button" class="btn ghost sm" data-action="close">Close</button></div>
+  <div class="modal-body">
+    <div class="panel panel-pad"><h3>Seller (customer selling gold)</h3><div class="fgrid">
+      <div class="field"><label for="pp_cust">Saved customer</label><select id="pp_cust" data-p="customerId"><option value="">New / walk-in seller</option>${custOpts}</select></div>
+      <div class="field"><label for="pp_date">Date</label><input id="pp_date" type="date" data-p="date" value="${esc(d.date)}"></div>
+      ${c ? `<div class="full hint">Current khata balance: <strong>${money(customerBalance(c.id))}</strong>${customerBalance(c.id) > 0 ? " due" : ""}</div>` : `
+      <div class="field"><label for="pp_name">Seller name</label><input id="pp_name" data-p="name" value="${esc(d.name)}" placeholder="Full name"></div>
+      <div class="field"><label for="pp_phone">Phone</label><input id="pp_phone" data-p="phone" inputmode="tel" value="${esc(d.phone)}" placeholder="0300-1234567"></div>`}
+      <div class="field"><label for="pp_cnic">CNIC</label><input id="pp_cnic" data-p="cnic" value="${esc(d.cnic)}" placeholder="12345-1234567-1"></div>
+      ${c ? "" : `<div class="field"><label for="pp_addr">Address</label><input id="pp_addr" data-p="address" value="${esc(d.address)}"></div>
+      <label class="full row hint" style="gap:6px"><input type="checkbox" data-p="saveCustomer" ${d.saveCustomer ? "checked" : ""}> Save this seller as a customer (so the amount can go in their khata)</label>`}
+    </div></div>
+
+    <div class="panel panel-pad">
+      <div class="line-top"><h3 style="margin:0">Gold items</h3><button type="button" class="btn sm" data-action="p-add-item">+ Add item</button></div>
+      <div class="field" style="margin:10px 0"><label for="pp_rate">Buying rate — Rs per gram of pure (24K) gold</label><input id="pp_rate" type="number" min="0" step="1" data-p="rate" value="${esc(d.rate)}"><span class="hint">Amount = weight × karat/24 × (100 − khaad %) × rate</span></div>
+      <div style="display:grid;gap:10px">
+      ${d.items.map((it, i) => `<div class="line-card"><div class="line-fields">
+        <div class="field wide"><label for="pi_d${i}">Item</label><input id="pi_d${i}" data-pi="${i}" data-f="desc" value="${esc(it.desc)}" placeholder="e.g. Old bangles"></div>
+        <div class="field"><label for="pi_k${i}">Karat</label><select id="pi_k${i}" data-pi="${i}" data-f="karat">${PKARATS.map(k => `<option value="${k}" ${n(it.karat) === k ? "selected" : ""}>${k}K</option>`).join("")}</select></div>
+        <div class="field"><label for="pi_w${i}">Weight (g)</label><input id="pi_w${i}" type="number" step="0.001" min="0" data-pi="${i}" data-f="weight" value="${esc(it.weight)}"></div>
+        <div class="field"><label for="pi_c${i}">Khaad / cut %</label><input id="pi_c${i}" type="number" step="0.5" min="0" max="100" data-pi="${i}" data-f="cut" value="${esc(it.cut)}"></div>
+        <div class="field"><label>Amount</label><div class="line-total" id="piv${i}" style="padding-top:8px"></div></div>
+      </div><div class="row" style="justify-content:space-between"><span class="tola" id="pit${i}"></span><button type="button" class="btn sm ghost danger" data-action="p-rm-item" data-i="${i}">Remove</button></div></div>`).join("")}
+      </div>
+    </div>
+
+    <div class="panel panel-pad">
+      <h3>Payment to seller</h3>
+      <div class="sumrow"><span>Total weight</span><span id="pp_w"></span></div>
+      <div class="sumrow"><span>Pure gold (24K)</span><span id="pp_pure"></span></div>
+      <div class="sumrow total"><span>Total amount</span><span id="pp_total"></span></div>
+      <div class="fgrid" style="margin-top:8px">
+        <div class="field"><label for="pp_paid">Paid now (Rs)</label><input id="pp_paid" type="number" min="0" step="1" data-p="paid" value="${esc(d.paid)}"></div>
+        <div class="field"><label for="pp_meth">Method</label><select id="pp_meth" data-p="method">${METHODS.map(x => `<option ${x === d.method ? "selected" : ""}>${x}</option>`).join("")}</select></div>
+      </div>
+      <button type="button" class="btn sm" style="margin-top:8px" data-action="p-pay-full">Paid in full</button>
+      <div class="sumrow" style="margin-top:8px;font-weight:700" id="pp_rest"></div>
+      <div class="field" style="margin-top:8px"><label for="pp_note">Note</label><input id="pp_note" data-p="note" value="${esc(d.note)}" placeholder="Optional (e.g. tested on machine)"></div>
+      <p class="hint" id="pp_err" style="color:var(--danger);margin:6px 0 0"></p>
+    </div>
+  </div>
+  <div class="modal-foot"><button type="button" class="btn" data-action="close">Cancel</button><button type="button" class="btn primary" data-action="save-purchase">Save &amp; make receipt</button></div>`;
+  updatePTotals();
+}
+function updatePTotals() {
+  const d = pdraft; if (!d) return;
+  d.items.forEach((it, i) => {
+    const x = pItem(it, d.rate);
+    const v = $("#piv" + i); if (v) v.textContent = money(x.value);
+    const t = $("#pit" + i); if (t) t.textContent = n(it.weight) ? `${tolaStr(it.weight)} · pure ${grams(x.pure)}` : "";
+  });
+  const t = pTotals(d);
+  const set = (id, v) => { const e = $(id); if (e) e.textContent = v; };
+  set("#pp_w", `${grams(t.weight)}${t.weight ? " · " + tolaStr(t.weight) : ""}`); set("#pp_pure", grams(t.pure)); set("#pp_total", money(t.total));
+  const r = $("#pp_rest");
+  if (r) r.innerHTML = t.due <= 0 ? `<span>Fully paid</span><span></span>` : d.customerId ? `<span>Goes to khata (udhaar minus)</span><span>${money(t.due)}</span>` : `<span style="color:var(--danger)">Still to pay seller</span><span style="color:var(--danger)">${money(t.due)}</span>`;
+}
+async function savePurchase(btn) {
+  const d = pdraft, err = $("#pp_err"); if (!d) return;
+  const items = d.items.filter(it => n(it.weight) > 0);
+  if (!items.length) { err.textContent = "Enter the weight of at least one item."; return; }
+  if (n(d.rate) <= 0) { err.textContent = "Enter the buying rate per gram."; return; }
+  if (!d.customerId && !d.name.trim()) { err.textContent = "Enter the seller's name."; return; }
+  const t = pTotals({ ...d, items });
+  if (t.paid > t.total) { err.textContent = "Paid amount is more than the total."; return; }
+  if (!d.customerId && !d.saveCustomer && t.paid < t.total) { err.textContent = "A walk-in seller must be paid in full. Tick \"Save this seller as a customer\" to put the rest in their khata."; return; }
+  btn.disabled = true; btn.textContent = "Saving…";
+  try {
+    let cid = d.customerId;
+    if (!cid && d.saveCustomer) {
+      cid = uid("c_");
+      await put("customers", cid, { name: d.name.trim(), phone: d.phone.trim(), cnic: d.cnic.trim(), address: d.address.trim(), note: "", createdAt: new Date().toISOString() });
+    }
+    const c = S.customers.find(x => x.id === cid);
+    const before = cid ? customerBalance(cid) : null;
+    const khata = cid ? Math.max(0, t.total - t.paid) : 0;
+    const id = uid("g_");
+    const rec = {
+      no: nextNo(S.purchases, "OG-"), date: d.date || todayISO(), customerId: cid || "",
+      sellerName: c ? c.name : d.name.trim(), sellerPhone: c ? (c.phone || "") : d.phone.trim(), sellerCnic: d.cnic.trim() || (c && c.cnic) || "", sellerAddress: c ? (c.address || "") : d.address.trim(),
+      items: items.map(it => { const x = pItem(it, d.rate); return { desc: it.desc.trim(), karat: n(it.karat), weight: n(it.weight), cut: n(it.cut), pure: Math.round(x.pure * 1000) / 1000, value: Math.round(x.value) }; }),
+      rate: n(d.rate), weight: Math.round(t.weight * 1000) / 1000, pure: Math.round(t.pure * 1000) / 1000, total: t.total, paid: t.paid, method: d.method, khata,
+      balanceBefore: before, balanceAfter: before == null ? null : before - khata, note: d.note.trim(), status: "In hand", createdAt: new Date().toISOString()
+    };
+    if (cid && c && d.cnic.trim() && !c.cnic) { const { id: xid, ...rest } = c; await put("customers", xid, { ...rest, cnic: d.cnic.trim() }); }
+    await put("purchases", id, rec);
+    pdraft = null; toast(`Purchase ${rec.no} saved`); render(); openPurchase({ ...rec, id });
+  } catch (e) {
+    btn.disabled = false; btn.textContent = "Save & make receipt";
+    err.textContent = "The purchase didn't save. Try again.";
+  }
+}
+function purchaseHTML(p) {
+  return `<div class="paper">
+    <div class="paper-head">${shopBlock()}<div class="meta"><div class="doc-kind">Old gold purchase</div><div class="num"><strong>${esc(p.no)}</strong></div><div>${fmtDate(p.date)}</div></div></div>
+    <div class="to"><div><div class="hint">Purchased from (seller)</div><strong>${esc(p.sellerName)}</strong><div class="hint">${[esc(p.sellerPhone), p.sellerCnic ? "CNIC " + esc(p.sellerCnic) : ""].filter(Boolean).join(" · ")}</div>${p.sellerAddress ? `<div class="hint">${esc(p.sellerAddress)}</div>` : ""}</div>
+      <div style="text-align:right"><div class="hint">Rate (24K pure)</div><div class="num">${money(p.rate)} per gram</div><div class="hint">${money(p.rate * TOLA)} per tola</div></div></div>
+    <div class="tbl-wrap"><table><thead><tr><th>Item</th><th class="r">Karat</th><th class="r">Weight</th><th class="r">Khaad</th><th class="r">Pure gold</th><th class="r">Amount</th></tr></thead><tbody>
+    ${(p.items || []).map(it => `<tr><td><strong>${esc(it.desc || "Old gold")}</strong><div class="hint">${tolaStr(it.weight)}</div></td><td class="r">${esc(it.karat)}K</td><td class="r">${grams(it.weight)}</td><td class="r">${esc(it.cut || 0)}%</td><td class="r">${grams(it.pure)}</td><td class="r">${money(it.value)}</td></tr>`).join("")}
+    </tbody></table></div>
+    <div class="totals">
+      <div class="sumrow"><span>Total weight</span><span>${grams(p.weight)}</span></div>
+      <div class="sumrow"><span>Pure gold</span><span>${grams(p.pure)}</span></div>
+      <div class="sumrow total"><span>Total amount</span><span>${money(p.total)}</span></div>
+      <div class="sumrow"><span>Paid to seller (${esc(p.method)})</span><span>${money(p.paid)}</span></div>
+      ${n(p.khata) ? `<div class="sumrow"><span>Adjusted in khata</span><span>${money(p.khata)}</span></div>` : ""}
+      ${p.balanceBefore != null && n(p.khata) ? `<div class="sumrow"><span>Khata before</span><span>${money(p.balanceBefore)}</span></div><div class="sumrow"><span>Khata now</span><span>${money(p.balanceAfter)}${n(p.balanceAfter) < 0 ? " (advance)" : ""}</span></div>` : ""}
+      ${!p.customerId && p.total - p.paid > 0 ? `<div class="sumrow bal"><span>Still to pay</span><span>${money(p.total - p.paid)}</span></div>` : ""}
+    </div>
+    ${p.note ? `<p class="hint" style="margin:8px 0 0">Note: ${esc(p.note)}</p>` : ""}
+    <div class="decl" style="border:1px dashed var(--line);border-radius:8px;padding:10px;margin-top:12px;font-size:.85rem">
+      I, <strong>${esc(p.sellerName)}</strong>, declare that the gold above is my own property and I have sold it to the shop of my own free will at the rate shown.
+      <div class="ur" style="color:inherit">میں تصدیق کرتا / کرتی ہوں کہ یہ سونا میری ذاتی ملکیت ہے اور میں نے اپنی مرضی سے اوپر لکھے ریٹ پر فروخت کیا ہے۔</div>
+    </div>
+    <div class="foot"><span>Seller signature / thumb ____________</span><span>Shop signature ____________</span></div>
+  </div>`;
+}
+function openPurchase(p) {
+  p = typeof p === "string" ? S.purchases.find(x => x.id === p) : p; if (!p) return;
+  openModal(`<div class="modal-head"><h3>Purchase ${esc(p.no)}</h3><button class="btn ghost sm" data-action="close">Close</button></div>
+  <div class="modal-body">
+    <div class="row"><label class="hint" for="pst">Gold status</label><select id="pst" data-pstatus="${p.id}" style="border:1px solid var(--line);border-radius:8px;padding:6px 8px;background:var(--surface)">${PSTATUS.map(s => `<option ${s === (p.status || "In hand") ? "selected" : ""}>${s}</option>`).join("")}</select></div>
+    ${purchaseHTML(p)}</div>${docFoot("purchase", p)}`, true);
+}
+function purchaseText(p) {
+  const st = settings();
+  return [`*${st.shopName || "Jewellers"}*`, `Old gold purchase ${p.no} · ${fmtDate(p.date)}`, `Seller: ${p.sellerName}${p.sellerCnic ? " (CNIC " + p.sellerCnic + ")" : ""}`, `Rate: ${money(p.rate)} per gram (24K)`, "",
+    ...(p.items || []).map(it => `• ${it.desc || "Old gold"} ${it.karat}K ${grams(it.weight)}, khaad ${it.cut || 0}% → ${money(it.value)}`),
+    "", `*Total: ${money(p.total)}*`, `Paid: ${money(p.paid)} (${p.method})`, n(p.khata) ? `Adjusted in khata: ${money(p.khata)}` : "", "Shukriya!"].filter(x => x !== "").join("\n");
+}
+function vPurchases() {
+  const term = q.purchases.toLowerCase();
+  const list = S.purchases.filter(p => !term || [p.no, p.sellerName, p.sellerPhone, p.sellerCnic].join(" ").toLowerCase().includes(term));
+  const t = todayISO(), mon = t.slice(0, 7);
+  const sum = (arr, f) => arr.reduce((a, x) => a + n(x[f]), 0);
+  const today = S.purchases.filter(p => p.date === t), month = S.purchases.filter(p => (p.date || "").startsWith(mon));
+  const inHand = S.purchases.filter(p => (p.status || "In hand") === "In hand");
+  return `
+  <div class="head"><div><h2>Old gold purchase <span class="ur">پرانا سونا خرید</span></h2><p>Gold bought from customers · every purchase gets a receipt</p></div>
+  <div class="row"><input class="search" id="qPurchases" type="search" placeholder="Search no., name, phone or CNIC" value="${esc(q.purchases)}"><button class="btn primary" data-action="new-purchase">+ Buy old gold</button></div></div>
+  <div class="stats">
+    <div class="panel stat"><div class="label">Bought today</div><div class="value">${grams(sum(today, "weight"))}</div><div class="sub">${today.length} purchase${today.length === 1 ? "" : "s"} · ${money(sum(today, "total"))}</div></div>
+    <div class="panel stat"><div class="label">This month</div><div class="value">${grams(sum(month, "weight"))}</div><div class="sub">${money(sum(month, "total"))} · pure ${grams(sum(month, "pure"))}</div></div>
+    <div class="panel stat"><div class="label">Old gold in hand</div><div class="value">${grams(sum(inHand, "weight"))}</div><div class="sub">pure ${grams(sum(inHand, "pure"))} · ${inHand.length} lot${inHand.length === 1 ? "" : "s"}</div></div>
+    <div class="panel stat"><div class="label">Cash paid this month</div><div class="value">${money(sum(month, "paid"))}</div><div class="sub">${money(sum(month, "khata"))} adjusted in khata</div></div>
+  </div>
+  <div class="panel">${list.length ? `<div class="tbl-wrap"><table><thead><tr><th>No.</th><th>Date</th><th>Seller</th><th class="r">Weight</th><th class="r">Pure</th><th class="r">Amount</th><th class="r">Status</th></tr></thead><tbody>
+  ${list.map(p => `<tr class="click" data-action="open-purchase" data-id="${p.id}"><td class="num">${esc(p.no)}</td><td>${fmtDate(p.date)}</td><td>${esc(p.sellerName)}<div class="hint">${[esc(p.sellerPhone), esc(p.sellerCnic)].filter(Boolean).join(" · ")}</div></td><td class="r">${grams(p.weight)}</td><td class="r">${grams(p.pure)}</td><td class="r">${money(p.total)}${!p.customerId && p.total - p.paid > 0 ? `<div><span class="pill due">${money(p.total - p.paid)} to pay</span></div>` : ""}</td><td class="r">${(p.status || "In hand") === "In hand" ? `<span class="pill k">In hand</span>` : `<span class="pill out">${esc(p.status)}</span>`}</td></tr>`).join("")}
+  </tbody></table></div>` : `<div class="empty"><strong>${term ? "No purchase matches that search" : "No old gold bought yet"}</strong>${term ? "Try another name, phone or CNIC." : "When a customer sells you gold, record it with Buy old gold to make a receipt."}</div>`}</div>`;
 }
 
 /* ---------- rate quick edit ---------- */
@@ -946,7 +1135,7 @@ document.addEventListener("click", async e => {
     case "open-customer": openCustomer(id); break;
     case "del-customer": {
       const c = S.customers.find(x => x.id === id);
-      if (S.sales.some(s => s.customerId === id) || S.payments.some(p => p.customerId === id)) { toast("This customer has bills. Delete their bills first."); break; }
+      if (S.sales.some(s => s.customerId === id) || S.payments.some(p => p.customerId === id) || S.purchases.some(p => p.customerId === id)) { toast("This customer has bills. Delete their bills first."); break; }
       confirmBox("Delete customer?", `${esc(c.name)} will be removed permanently.`, "Delete", () => del("customers", id)); break;
     }
     case "bill-for": draft = newDraft(); draft.customerId = id; closeModal(); go("bill"); break;
@@ -956,6 +1145,16 @@ document.addEventListener("click", async e => {
     case "new-payment": paymentForm(t.dataset.cid); break;
     case "open-sale": openSale(id); break;
     case "open-payment": openPayment(id); break;
+    case "new-purchase": purchaseForm(t.dataset.cid); break;
+    case "open-purchase": openPurchase(id); break;
+    case "p-add-item": pdraft.items.push({ desc: "", karat: 22, weight: "", cut: 0 }); paintPForm(); break;
+    case "p-rm-item": pdraft.items.splice(+t.dataset.i, 1); if (!pdraft.items.length) pdraft.items.push({ desc: "", karat: 22, weight: "", cut: 0 }); paintPForm(); break;
+    case "p-pay-full": pdraft.paid = pTotals(pdraft).total; $("#pp_paid").value = pdraft.paid; updatePTotals(); break;
+    case "save-purchase": savePurchase(t); break;
+    case "del-purchase": confirmBox("Delete purchase?", "This old gold purchase will be deleted. If it was adjusted in a customer's khata, that adjustment is removed too.", "Delete", () => del("purchases", id)); break;
+    case "copy-purchase": copyText(purchaseText(S.purchases.find(x => x.id === id))); break;
+    case "img-purchase": copyImage("purchase", S.purchases.find(x => x.id === id)); break;
+    case "dl-purchase": dl("purchase", S.purchases.find(x => x.id === id)); break;
     case "del-sale": {
       const s = S.sales.find(x => x.id === id);
       confirmBox("Delete bill?", `Bill ${esc(s.no)} will be deleted and its stock items returned to stock.`, "Delete bill", async () => {
@@ -981,7 +1180,7 @@ document.addEventListener("click", async e => {
     case "save-bill": saveBill(t); break;
     case "lock-now": lockNow(); break;
     case "change-pw": changePwForm(); break;
-    case "backup": { const data = JSON.stringify({ app: "zewar-khata", savedAt: new Date().toISOString(), customers: S.customers, products: S.products, sales: S.sales, payments: S.payments, settings: S.settings }, null, 1);
+    case "backup": { const data = JSON.stringify({ app: "zewar-khata", savedAt: new Date().toISOString(), customers: S.customers, products: S.products, sales: S.sales, payments: S.payments, purchases: S.purchases, settings: S.settings }, null, 1);
       fileDownloads().save({ filename: `zewar-khata-backup-${todayISO()}.json`, data: new Blob([data], { type: "application/json" }) }); toast("Backup downloaded"); break; }
     case "clear-examples": confirmBox("Remove example records?", "All records marked Example will be deleted. Your own records stay.", "Remove", async () => {
       for (const c of COLS) for (const x of S[c].filter(r => r.example)) await del(c, x.id);
@@ -990,13 +1189,16 @@ document.addEventListener("click", async e => {
 });
 document.addEventListener("input", e => {
   const el = e.target;
-  if (el.id === "qCustomers" || el.id === "qStock" || el.id === "qBills") {
-    const key = { qCustomers: "customers", qStock: "stock", qBills: "bills" }[el.id];
+  if (el.id === "qCustomers" || el.id === "qStock" || el.id === "qBills" || el.id === "qPurchases") {
+    const key = { qCustomers: "customers", qStock: "stock", qBills: "bills", qPurchases: "purchases" }[el.id];
     q[key] = el.value; const pos = el.selectionStart; render(); const ne = $("#" + el.id); ne.focus(); try { ne.setSelectionRange(pos, pos); } catch {} return;
   }
   if (el.id === "b_pick") { const v = el.value.toLowerCase(); document.querySelectorAll("#pickList .pick").forEach(b => b.hidden = !b.dataset.s.includes(v)); return; }
   if (el.dataset.bill) { draft[el.dataset.bill] = el.value; if (el.dataset.bill === "customerId") { render(); return; } updateBillTotals(); return; }
   if (el.dataset.line != null) { draft.lines[+el.dataset.line][el.dataset.f] = el.value; if (el.dataset.rerender) { render(); return; } updateBillTotals(); return; }
+  if (el.dataset.p && pdraft) { pdraft[el.dataset.p] = el.type === "checkbox" ? el.checked : el.value; if (el.dataset.p === "customerId") { pPrefill(); paintPForm(); return; } updatePTotals(); return; }
+  if (el.dataset.pi != null && pdraft) { pdraft.items[+el.dataset.pi][el.dataset.f] = el.value; updatePTotals(); return; }
+  if (el.dataset.pstatus) { const r = S.purchases.find(x => x.id === el.dataset.pstatus); if (r) { const { id: rid, ...rest } = r; put("purchases", rid, { ...rest, status: el.value }).then(() => toast("Status updated")).catch(() => toast("Couldn't update status.")); } return; }
   if (el.dataset.old != null) { draft.oldGold[+el.dataset.old][el.dataset.f] = el.value; updateBillTotals(); }
 });
 document.addEventListener("submit", async e => {
