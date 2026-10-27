@@ -205,7 +205,7 @@ tr.click:hover td { background: var(--sunk); }
 <script>
 (() => {
 "use strict";
-const TOLA = 11.664;
+const TOLA = 12.150; // 1 tola = 12.150 grams
 const KARATS = [24, 22, 21, 18];
 const METHODS = ["Cash", "Bank transfer", "JazzCash", "Easypaisa", "Card"];
 const CATEGORIES = ["Ring", "Necklace", "Bangles", "Earrings", "Chain", "Bracelet", "Set", "Pendant", "Nose pin", "Other"];
@@ -999,11 +999,11 @@ function updatePTotals() {
   d.items.forEach((it, i) => {
     const x = pItem(it, d.rate);
     const v = $("#piv" + i); if (v) v.textContent = money(x.value);
-    const t = $("#pit" + i); if (t) t.textContent = n(it.weight) ? `${tolaStr(it.weight)} · pure ${grams(x.pure)}` : "";
+    const t = $("#pit" + i); if (t) t.textContent = n(it.weight) ? `Pure gold ${grams(x.pure)}` : "";
   });
   const t = pTotals(d);
   const set = (id, v) => { const e = $(id); if (e) e.textContent = v; };
-  set("#pp_w", `${grams(t.weight)}${t.weight ? " · " + tolaStr(t.weight) : ""}`); set("#pp_pure", grams(t.pure)); set("#pp_total", money(t.total));
+  set("#pp_w", grams(t.weight)); set("#pp_pure", grams(t.pure)); set("#pp_total", money(t.total));
   const r = $("#pp_rest");
   if (r) r.innerHTML = t.due <= 0 ? `<span>Fully paid</span><span></span>` : d.customerId ? `<span>Goes to khata (udhaar minus)</span><span>${money(t.due)}</span>` : `<span style="color:var(--danger)">Still to pay seller</span><span style="color:var(--danger)">${money(t.due)}</span>`;
 }
@@ -1048,7 +1048,7 @@ function purchaseHTML(p) {
     <div class="to"><div><div class="hint">Purchased from (seller)</div><strong>${esc(p.sellerName)}</strong><div class="hint">${[esc(p.sellerPhone), p.sellerCnic ? "CNIC " + esc(p.sellerCnic) : ""].filter(Boolean).join(" · ")}</div>${p.sellerAddress ? `<div class="hint">${esc(p.sellerAddress)}</div>` : ""}</div>
       <div style="text-align:right"><div class="hint">Rate (24K pure)</div><div class="num">${money(p.rate)} per gram</div><div class="hint">${money(p.rate * TOLA)} per tola</div></div></div>
     <div class="tbl-wrap"><table><thead><tr><th>Item</th><th class="r">Karat</th><th class="r">Weight</th><th class="r">Khaad</th><th class="r">Pure gold</th><th class="r">Amount</th></tr></thead><tbody>
-    ${(p.items || []).map(it => `<tr><td><strong>${esc(it.desc || "Old gold")}</strong><div class="hint">${tolaStr(it.weight)}</div></td><td class="r">${esc(it.karat)}K</td><td class="r">${grams(it.weight)}</td><td class="r">${esc(it.cut || 0)}%</td><td class="r">${grams(it.pure)}</td><td class="r">${money(it.value)}</td></tr>`).join("")}
+    ${(p.items || []).map(it => `<tr><td><strong>${esc(it.desc || "Old gold")}</strong></td><td class="r">${esc(it.karat)}K</td><td class="r">${grams(it.weight)}</td><td class="r">${esc(it.cut || 0)}%</td><td class="r">${grams(it.pure)}</td><td class="r">${money(it.value)}</td></tr>`).join("")}
     </tbody></table></div>
     <div class="totals">
       <div class="sumrow"><span>Total weight</span><span>${grams(p.weight)}</span></div>
