@@ -203,7 +203,7 @@ const KARATS = [24, 22, 21, 18];
 const METHODS = ["Cash", "Bank transfer", "JazzCash", "Easypaisa", "Card"];
 const CATEGORIES = ["Ring", "Necklace", "Bangles", "Earrings", "Chain", "Bracelet", "Set", "Pendant", "Nose pin", "Other"];
 
-const PKARATS = [24, 22, 21, 20, 18, 14];
+const PKARATS = Array.from({ length: 17 }, (_, i) => 24 - i); // 24K down to 8K
 const PSTATUS = ["In hand", "Melted / sent to karigar", "Sold"];
 const S = { customers: [], products: [], sales: [], payments: [], purchases: [], settings: null, loaded: false, mode: "loading" };
 let db = null, downloads = null;
@@ -883,7 +883,7 @@ function paintPForm() {
       ${c ? `<div class="full hint">Current khata balance: <strong>${money(customerBalance(c.id))}</strong>${customerBalance(c.id) > 0 ? " due" : ""}</div>` : `
       <div class="field"><label for="pp_name">Seller name</label><input id="pp_name" data-p="name" value="${esc(d.name)}" placeholder="Full name"></div>
       <div class="field"><label for="pp_phone">Phone</label><input id="pp_phone" data-p="phone" inputmode="tel" value="${esc(d.phone)}" placeholder="0300-1234567"></div>`}
-      <div class="field"><label for="pp_cnic">CNIC</label><input id="pp_cnic" data-p="cnic" value="${esc(d.cnic)}" placeholder="12345-1234567-1"></div>
+      <div class="field"><label for="pp_cnic">CNIC (optional)</label><input id="pp_cnic" data-p="cnic" value="${esc(d.cnic)}" placeholder="12345-1234567-1"></div>
       ${c ? "" : `<div class="field"><label for="pp_addr">Address</label><input id="pp_addr" data-p="address" value="${esc(d.address)}"></div>
       <label class="full row hint" style="gap:6px"><input type="checkbox" data-p="saveCustomer" ${d.saveCustomer ? "checked" : ""}> Save this seller as a customer (so the amount can go in their khata)</label>`}
     </div></div>
