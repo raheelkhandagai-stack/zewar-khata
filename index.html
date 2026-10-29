@@ -158,11 +158,6 @@ tr.click:hover td { background: var(--sunk); }
 .shot { width: 100%; border-radius: 8px; border: 1px solid var(--line); display: block; }
 .toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(env(safe-area-inset-bottom, 0px) + 20px); background: var(--ink); color: var(--bg); padding: 10px 16px; border-radius: 10px; z-index: 30; font-weight: 600; box-shadow: var(--shadow); max-width: calc(100% - 32px); }
 
-.lock { position: fixed; inset: 0; z-index: 50; background: var(--bg); display: grid; place-items: center; padding: 24px 16px; overflow-y: auto; }
-.lock-card { width: min(380px, 100%); background: var(--surface); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); padding: 24px; display: grid; gap: 14px; }
-.lock-card h2 { font-family: var(--f-display); font-weight: 400; font-size: 1.5rem; margin: 0; }
-.lock-card p { margin: 0; color: var(--muted); }
-.lock-card .err { color: var(--danger); min-height: 1.2em; font-size: .88rem; }
 @media (max-width: 860px) {
   .stats { grid-template-columns: repeat(2, minmax(0,1fr)); }
   .grid2, .bill-grid { grid-template-columns: minmax(0,1fr); }
@@ -183,7 +178,6 @@ tr.click:hover td { background: var(--sunk); }
   <div class="wrap">
     <div class="top-row">
       <div class="brand"><h1 id="shopTitle">Jewellers</h1><span class="ur">زیور کھاتہ</span></div>
-      <button class="btn sm ghost" data-action="lock-now" id="lockBtn" hidden title="Lock the app">Lock</button>
       <button class="rate-chip" id="rateChip" data-action="edit-rate" title="Change today's gold rate per gram"><span class="dot"></span><span><span id="rateText" class="num">Set gold rate</span> <small>/ gram</small></span></button>
     </div>
     <nav class="tabs" id="tabs" aria-label="Sections">
@@ -199,7 +193,6 @@ tr.click:hover td { background: var(--sunk); }
 </header>
 <div class="wrap"><main id="main" aria-live="polite"></main></div>
 <div id="modalRoot"></div>
-<div id="lockRoot"></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script>
@@ -295,70 +288,6 @@ function onData() {
   if (formBusy) { dirty = true; paintChrome(); return; }
   render();
 }
-/* ---------- password lock ---------- */
-const LOCK_KEY = "zewar-khata-lock", SESSION_KEY = "zewar-khata-open";
-let lockTries = 0, lockUntil = 0;
-function getLock() { try { return JSON.parse(localStorage.getItem(LOCK_KEY) || "null"); } catch { return null; } }
-async function hashPw(pw, salt) {
-  const data = new TextEncoder().encode(salt + ":" + pw);
-  let buf = await crypto.subtle.digest("SHA-256", data);
-  for (let i = 0; i < 2000; i++) buf = await crypto.subtle.digest("SHA-256", new Uint8Array([...new Uint8Array(buf), ...data]));
-  return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, "0")).join("");
-}
-async function savePw(pw) {
-  const salt = [...crypto.getRandomValues(new Uint8Array(16))].map(b => b.toString(16).padStart(2, "0")).join("");
-  localStorage.setItem(LOCK_KEY, JSON.stringify({ salt, hash: await hashPw(pw, salt) }));
-}
-async function checkPw(pw) { const l = getLock(); return !!l && (await hashPw(pw, l.salt)) === l.hash; }
-function isOpen() { try { return sessionStorage.getItem(SESSION_KEY) === "1"; } catch { return false; } }
-function markOpen(v) { try { v ? sessionStorage.setItem(SESSION_KEY, "1") : sessionStorage.removeItem(SESSION_KEY); } catch {} }
-function showLock(onOpen) {
-  const creating = !getLock();
-  $("#lockRoot").innerHTML = `<div class="lock"><form class="lock-card" id="lockForm" autocomplete="off">
-    <div><h2>${creating ? "Set a password" : "Enter password"}</h2><p>${creating ? "Choose a password for Zewar Khata. It will be asked every time the app is opened." : "This app is locked."}</p></div>
-    <div class="field"><label for="lk1">Password</label><input id="lk1" type="password" autocomplete="${creating ? "new-password" : "current-password"}" required></div>
-    ${creating ? `<div class="field"><label for="lk2">Type it again</label><input id="lk2" type="password" autocomplete="new-password" required></div><p class="hint">Write it down somewhere safe. If you forget it, the records on this device can't be opened.</p>` : ""}
-    <div class="err" id="lkErr"></div>
-    <button class="btn primary" type="submit">${creating ? "Save password" : "Open"}</button></form></div>`;
-  document.body.style.overflow = "hidden";
-  setTimeout(() => $("#lk1").focus(), 30);
-  $("#lockForm").onsubmit = async e => {
-    e.preventDefault();
-    const pw = $("#lk1").value, err = $("#lkErr");
-    if (creating) {
-      if (pw.length < 4) { err.textContent = "Use at least 4 characters."; return; }
-      if (pw !== $("#lk2").value) { err.textContent = "The two passwords don't match."; return; }
-      try { await savePw(pw); } catch { err.textContent = "Couldn't save the password on this browser."; return; }
-    } else {
-      if (Date.now() < lockUntil) { err.textContent = `Too many wrong tries. Wait ${Math.ceil((lockUntil - Date.now()) / 1000)} seconds.`; return; }
-      if (!(await checkPw(pw))) {
-        lockTries++; if (lockTries >= 5) { lockUntil = Date.now() + 30000; lockTries = 0; }
-        err.textContent = "Wrong password."; $("#lk1").value = ""; $("#lk1").focus(); return;
-      }
-      lockTries = 0;
-    }
-    markOpen(true); $("#lockRoot").innerHTML = ""; document.body.style.overflow = ""; onOpen && onOpen();
-  };
-}
-function lockNow() { closeModal(); markOpen(false); showLock(() => render()); }
-function changePwForm() {
-  openModal(`<form id="pwForm"><div class="modal-head"><h3>Change password</h3><button type="button" class="btn ghost sm" data-action="close">Close</button></div>
-  <div class="modal-body"><div class="fgrid">
-    <div class="field full"><label for="pw0">Current password</label><input id="pw0" type="password" autocomplete="current-password" required></div>
-    <div class="field"><label for="pw1">New password</label><input id="pw1" type="password" autocomplete="new-password" required></div>
-    <div class="field"><label for="pw2">Type new password again</label><input id="pw2" type="password" autocomplete="new-password" required></div>
-  </div><p class="hint" id="pwErr" style="color:var(--danger);margin:0"></p></div>
-  <div class="modal-foot"><button type="button" class="btn" data-action="close">Cancel</button><button class="btn primary" type="submit">Save password</button></div></form>`);
-  $("#pwForm").onsubmit = async e => {
-    e.preventDefault();
-    const err = $("#pwErr");
-    if (!(await checkPw($("#pw0").value))) { err.textContent = "Current password is wrong."; return; }
-    if ($("#pw1").value.length < 4) { err.textContent = "Use at least 4 characters."; return; }
-    if ($("#pw1").value !== $("#pw2").value) { err.textContent = "The new passwords don't match."; return; }
-    try { await savePw($("#pw1").value); } catch { err.textContent = "Couldn't save. Try again."; return; }
-    closeModal(); toast("Password changed");
-  };
-}
 function fileDownloads() {
   return { save: async ({ filename, data }) => {
     const blob = data instanceof Blob ? data : new Blob([data], { type: "text/html" });
@@ -370,8 +299,6 @@ async function connect() {
   if (!window.claude || typeof window.claude.use !== "function") {
     downloads = fileDownloads();
     S.mode = loadLocal() ? "local" : "memory"; S.loaded = true;
-    if (S.mode === "local") $("#lockBtn").hidden = false;
-    if (S.mode === "local" && !isOpen()) { showLock(() => render()); return; }
     render(); return;
   }
   try {
@@ -513,7 +440,6 @@ function vSettings() {
     </div>
     <div class="row"><button class="btn primary" type="submit">Save settings</button><span class="hint">Every item price = weight in grams × rate per gram + making + stones.</span></div>
   </form>
-  ${S.mode === "local" ? `<div class="panel panel-pad"><h3>Password</h3><p style="margin:0 0 10px">The app asks for this password every time it is opened in a new tab or window.</p><div class="row"><button class="btn" type="button" data-action="change-pw">Change password</button><button class="btn" type="button" data-action="lock-now">Lock now</button></div></div>` : ""}
   ${S.mode === "local" ? `<div class="panel panel-pad"><h3>Backup</h3><p style="margin:0 0 10px">Your records are saved in this browser on this device. Download a backup regularly, and use Restore to move your data to another phone or computer.</p><div class="row"><button class="btn primary" type="button" data-action="backup">Download backup</button><label class="btn" for="restoreFile">Restore from backup</label><input type="file" id="restoreFile" accept="application/json,.json" hidden></div></div>` : ""}
   ${ex ? `<div class="panel panel-pad"><h3>Example records</h3><p style="margin:0 0 10px">${ex} example records were added so you can see how the app works. Remove them before you start using it for real.</p><button class="btn danger" data-action="clear-examples">Remove example records</button></div>` : ""}`;
 }
@@ -1178,8 +1104,6 @@ document.addEventListener("click", async e => {
     case "pay-full": draft.paid = totals(draft).total; $("#b_paid").value = draft.paid; updateBillTotals(); break;
     case "reset-bill": draft = newDraft(); render(); break;
     case "save-bill": saveBill(t); break;
-    case "lock-now": lockNow(); break;
-    case "change-pw": changePwForm(); break;
     case "backup": { const data = JSON.stringify({ app: "zewar-khata", savedAt: new Date().toISOString(), customers: S.customers, products: S.products, sales: S.sales, payments: S.payments, purchases: S.purchases, settings: S.settings }, null, 1);
       fileDownloads().save({ filename: `zewar-khata-backup-${todayISO()}.json`, data: new Blob([data], { type: "application/json" }) }); toast("Backup downloaded"); break; }
     case "clear-examples": confirmBox("Remove example records?", "All records marked Example will be deleted. Your own records stay.", "Remove", async () => {
