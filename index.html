@@ -203,7 +203,7 @@ const KARATS = [24, 22, 21, 18];
 const METHODS = ["Cash", "Bank transfer", "JazzCash", "Easypaisa", "Card"];
 const CATEGORIES = ["Ring", "Necklace", "Bangles", "Earrings", "Chain", "Bracelet", "Set", "Pendant", "Nose pin", "Other"];
 
-const PKARATS = Array.from({ length: 17 }, (_, i) => 24 - i); // 24K down to 8K
+const PKARATS = Array.from({ length: 33 }, (_, i) => 24 - i * 0.5); // 24K down to 8K in 0.5 steps
 const PSTATUS = ["In hand", "Melted / sent to karigar", "Sold"];
 const S = { customers: [], products: [], sales: [], payments: [], purchases: [], settings: null, loaded: false, mode: "loading" };
 let db = null, downloads = null;
